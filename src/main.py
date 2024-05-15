@@ -15,7 +15,7 @@ from driftpy.drift_client import DriftClient
 from driftpy.types import is_variant
 from driftpy.account_subscription_config import AccountSubscriptionConfig
 
-from src.utils import is_today, get_logs, write
+from src.utils import is_today, get_logs, write, is_between
 
 EVENT_TYPES = [
     "OrderActionRecord",
@@ -35,6 +35,17 @@ def valid_event(event):
     return event
 
 
+def parse_date(date_string) -> dt.datetime:
+    try:
+        date_format = "%Y-%m-%d"
+        parsed_date = dt.datetime.strptime(date_string, date_format)
+        return parsed_date
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"Not a valid date: '{date_string}'. Expected format: MM-DD-YYYY"
+        )
+
+
 async def main():
     parser = argparse.ArgumentParser(description="Parameters for archival.")
     parser.add_argument("--rpc", type=str, required=True, help="Solana RPC url")
@@ -52,15 +63,26 @@ async def main():
         help="Subaccounts to archive",
     )
     parser.add_argument(
-        "--funding-rates",
-        action="store_true",
-        help="Include funding rates in the archive",
-    )
-    parser.add_argument(
         "--events", type=valid_event, nargs="+", required=True, help="Events to archive"
     )
+    parser.add_argument(
+        "--start-date", type=parse_date, help="Start date for the archive"
+    )
+    parser.add_argument("--end-date", type=parse_date, help="End date for the archive")
 
     args = parser.parse_args()
+
+    if args.start_date and args.end_date and args.start_date > args.end_date:
+        raise argparse.ArgumentTypeError("Start date must be before end date.")
+
+    if args.start_date is None and args.end_date is None:
+        args.start_date = dt.datetime.now(dt.timezone.utc)
+        args.end_date = dt.datetime.now(dt.timezone.utc)
+
+    if (args.start_date is None and args.end_date is not None) or (
+        args.start_date is not None and args.end_date is None
+    ):
+        raise argparse.ArgumentTypeError("Both start and end date must be provided.")
 
     kp = Keypair()  # throwaway, doesn't matter
 
@@ -88,42 +110,50 @@ async def main():
 
     logs_by_pubkey = {}
     sigs_by_pubkey = {}
-
-    # fetch all the signatures for today for each tracked pubkey (subaccounts + authority)
     to_remove = []
+
     for pubkey in user_account_pubkeys:
-        sigs_for_today = []
-        today_done = False
+        print(f"Fetching signatures for subaccount: {pubkey}")
+        found_start_date = False
+        found_end_date = False
         before = None
-        while not today_done:
+        sigs_for_pubkey = []
+        while not found_end_date:
+            sigs = await connection.get_signatures_for_address(pubkey, before=before)
+            for sig in sigs.value:
+                if is_today(sig.block_time, args.end_date):
+                    before = sig.signature
+                    sigs_for_pubkey.append(str(sig.signature))
+                    found_end_date = True
+                    break
+            if len(sigs.value) < 1_000:
+                break
+            before = sigs.value[-1].signature
+
+        while not found_start_date:
             print(
-                f"fetching signatures for today, current size: {len(sigs_for_today)}",
+                f"fetching signatures, current size: {len(sigs_for_pubkey)}",
                 end="\r",
             )
-            sigs = await connection.get_signatures_for_address(
-                pubkey, before=before
-            )  # returns in reverse chronological order
-            before = sigs.value[
-                -1
-            ].signature  # set the signature of the last signature in the list as the "before" for the next query
+            sigs = await connection.get_signatures_for_address(pubkey, before=before)
+            before = sigs.value[-1].signature
 
-            today_size_before = len(sigs_for_today)
-            new_sigs_for_today = [
-                str(sig.signature) for sig in sigs.value if is_today(sig.block_time)
+            size_before = len(sigs_for_pubkey)
+            new_sigs = [
+                str(sig.signature)
+                for sig in sigs.value
+                if is_between(sig.block_time, args.start_date, args.end_date)
             ]
-            sigs_for_today.extend(new_sigs_for_today)
-            today_size_after = len(sigs_for_today)
+            sigs_for_pubkey.extend(new_sigs)
+            size_after = len(sigs_for_pubkey)
 
-            # if we didn't add all 1,000, that means that there's signatures in there that aren't from today, so we're done
-            today_done = today_size_after - today_size_before < 1_000
-        print(
-            f"\ntotal signatures for today for subaccount: {pubkey}: {len(sigs_for_today)}"
-        )
-        if len(sigs_for_today) == 0:
+            found_start_date = size_after - size_before < 1_000
+        print(f"Total signatures for subaccount: {pubkey}: {len(sigs_for_pubkey)}")
+        if len(sigs_for_pubkey) == 0:
             to_remove.append(pubkey)
             continue
         else:
-            sigs_by_pubkey[pubkey] = sigs_for_today
+            sigs_by_pubkey[pubkey] = sigs_for_pubkey
 
     for pubkey in to_remove:
         user_account_pubkeys.remove(pubkey)
@@ -142,6 +172,7 @@ async def main():
             print(
                 f"Successfully fetched logs for {len(failed_sig_logs)}/{len(failed_sigs)} failed signatures"
             )
+        print(pubkey)
         logs_by_pubkey[pubkey] = pubkey_logs
         print(
             f"Successfully fetched logs for {len(pubkey_logs)} signatures for subaccount: {pubkey}"
@@ -155,14 +186,15 @@ async def main():
             logs_by_sig = {}
             for log in log_list:
                 if log.name in archived_events:
-                    if log.name == "OrderActionRecord" and not is_variant(
-                        log.data.action, "Fill"
+                    if log.name == "OrderActionRecord" and (
+                        not is_variant(log.data.action, "Fill")
+                        or not str(pubkey) in str(log.data)
                     ):
                         continue
                     logs_by_sig.setdefault(sig, []).append(log)
             filtered_logs_by_pubkey.setdefault(pubkey, {}).update(logs_by_sig)
         print(
-            f"Filtered logs for account: {pubkey} -> {len(filtered_logs_by_pubkey[pubkey])} transactions"
+            f"Filtered logs for account: {pubkey} -> {len(filtered_logs_by_pubkey.get(pubkey, {}))} transactions"
         )
 
     # sort the logs by type
@@ -178,6 +210,8 @@ async def main():
         for pubkey, sig_logs in pubkey_dict.items():
             print(f"Event Type: {event_type}, Pubkey: {pubkey}, Logs: {sig_logs}")
 
+    if args.start_date and args.end_date:
+        today = f"{args.start_date.strftime('%Y-%m-%d')}_{args.end_date.strftime('%Y-%m-%d')}"
     write(f"logs/{today}_logs.csv", sorted_logs_by_pubkey)
 
 

@@ -3,8 +3,7 @@ import datetime as dt
 import aiohttp
 import csv
 import os
-
-from collections import defaultdict
+import time
 
 from driftpy.events.parse import parse_logs
 
@@ -13,12 +12,18 @@ MAX_RETRIES = 3  # Maximum number of retries for a failed request
 RETRY_DELAY = 5  # Delay in seconds between retries of requests
 
 
-def is_today(unix_ts: int) -> bool:
+def is_today(unix_ts: int, today: dt.datetime) -> bool:
     ts_date = dt.datetime.fromtimestamp(unix_ts, dt.timezone.utc)
 
-    today = dt.datetime.utcnow().date()
+    return ts_date.date() == today.date()
 
-    return ts_date.date() == today
+
+def is_between(unix_ts: int, start_date: dt.datetime, end_date: dt.datetime) -> bool:
+    return (
+        time.mktime((start_date - +dt.timedelta(days=1)).timetuple())
+        <= unix_ts
+        <= time.mktime((end_date + dt.timedelta(days=1)).timetuple())
+    )
 
 
 def get_tx_request(sig):
