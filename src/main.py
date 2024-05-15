@@ -206,9 +206,9 @@ async def main():
                 sorted_logs_by_pubkey[log.name][pubkey].append((sig, log))
 
     # Example output check
-    for event_type, pubkey_dict in sorted_logs_by_pubkey.items():
-        for pubkey, sig_logs in pubkey_dict.items():
-            print(f"Event Type: {event_type}, Pubkey: {pubkey}, Logs: {sig_logs}")
+    # for event_type, pubkey_dict in sorted_logs_by_pubkey.items():
+    #     for pubkey, sig_logs in pubkey_dict.items():
+    #         print(f"Event Type: {event_type}, Pubkey: {pubkey}, Logs: {sig_logs}")
 
     if args.start_date and args.end_date:
         today = f"{args.start_date.strftime('%Y-%m-%d')}_{args.end_date.strftime('%Y-%m-%d')}"

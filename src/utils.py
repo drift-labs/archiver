@@ -95,6 +95,8 @@ async def get_logs(dc, chunks, rpc):
                 continue
             for tx, sig in zip(responses, sigs):
                 try:
+                    if tx["result"]["meta"]["err"] is not None:
+                        continue
                     events = parse_logs(dc.program, tx["result"]["meta"]["logMessages"])
                     for event in events:
                         logs.setdefault(sig, []).append(event)
