@@ -32,3 +32,6 @@ EVENT_TYPES = [
 ]
 ```
 
+Spot interest calculations
+
+to calculate interest received on all spot assets run `python -m src.interest` with the same arguments as the archiver command, but do not include `--events`.

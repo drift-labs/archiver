@@ -94,6 +94,8 @@ async def get_logs(dc, chunks, rpc):
                 failed_sigs += sigs
                 continue
             for tx, sig in zip(responses, sigs):
+                if str(sig) == "2UVhmrN3PZNYjxWMxwNoSrC2NuFbTa91w3kcUELcmSkMWyd59cV27zQNk5h3dNKEEL4QGoHu2MYbQ7KGq7cSBA25":
+                    print(tx)
                 try:
                     if tx["result"]["meta"]["err"] is not None:
                         continue
@@ -125,3 +127,57 @@ def write(
                 for sig, log in sig_logs:
                     log_data_str = str(log)
                     writer.writerow([pubkey, sig, event_type, log_data_str])
+
+async def fetch_sigs_for_subaccount(connection, pubkey, args):
+    print(f"Fetching signatures for subaccount: {pubkey}")
+    found_start_date = False
+    found_end_date = False
+    before = None
+    sigs_for_pubkey = []
+    while not found_end_date:
+        sigs = await connection.get_signatures_for_address(pubkey, before=before)
+        for sig in sigs.value:
+            if is_today(sig.block_time, args.end_date):
+                before = sig.signature
+                sigs_for_pubkey.append(str(sig.signature))
+                found_end_date = True
+                break
+        if len(sigs.value) < 1_000:
+            break
+        before = sigs.value[-1].signature
+    while not found_start_date:
+        print(
+            f"fetching signatures, current size: {len(sigs_for_pubkey)}",
+            end="\r",
+        )
+        sigs = await connection.get_signatures_for_address(pubkey, before=before)
+        before = sigs.value[-1].signature
+
+        size_before = len(sigs_for_pubkey)
+        new_sigs = [
+            str(sig.signature)
+            for sig in sigs.value
+            if is_between(sig.block_time, args.start_date, args.end_date)
+        ]
+        sigs_for_pubkey.extend(new_sigs)
+        size_after = len(sigs_for_pubkey)
+
+        found_start_date = size_after - size_before < 1_000
+    print(f"Total signatures for subaccount: {pubkey}: {len(sigs_for_pubkey)}")
+    return sigs_for_pubkey
+
+async def fetch_and_parse_logs(pubkey, sigs, dc, rpc):
+    chunks = [sigs[i : i + 200] for i in range(0, len(sigs), 200)]
+    pubkey_logs, failed_sigs = await get_logs(dc, chunks, rpc)
+    if len(failed_sigs) > 0:
+        print(
+            f"Failed to fetch logs for {len(failed_sigs)} signatures: {failed_sigs}, retrying"
+        )
+        chunks = [failed_sigs[i : i + 200] for i in range(0, len(failed_sigs), 200)]
+        failed_sig_logs, _ = await get_logs(dc, chunks, rpc)
+        pubkey_logs.update(failed_sig_logs)
+        print(
+            f"Successfully fetched logs for {len(failed_sig_logs)}/{len(failed_sigs)} failed signatures"
+        )
+    return pubkey_logs
+

@@ -15,7 +15,7 @@ from driftpy.drift_client import DriftClient
 from driftpy.types import is_variant
 from driftpy.account_subscription_config import AccountSubscriptionConfig
 
-from src.utils import is_today, get_logs, write, is_between
+from src.utils import is_today, get_logs, write, is_between, fetch_sigs_for_subaccount, fetch_and_parse_logs
 
 EVENT_TYPES = [
     "OrderActionRecord",
@@ -25,6 +25,7 @@ EVENT_TYPES = [
     "InsuranceFundStakeRecord",
     "LiquidationRecord",
     "LPRecord",
+    "WithdrawRecord"
     "FundingPaymentRecord",
 ]
 
@@ -44,6 +45,19 @@ def parse_date(date_string) -> dt.datetime:
         raise argparse.ArgumentTypeError(
             f"Not a valid date: '{date_string}'. Expected format: MM-DD-YYYY"
         )
+    
+def validate_args(args):
+    if args.start_date and args.end_date and args.start_date > args.end_date:
+        raise argparse.ArgumentTypeError("Start date must be before end date.")
+
+    if args.start_date is None and args.end_date is None:
+        args.start_date = dt.datetime.now(dt.timezone.utc)
+        args.end_date = dt.datetime.now(dt.timezone.utc)
+
+    if (args.start_date is None and args.end_date is not None) or (
+        args.start_date is not None and args.end_date is None
+    ):
+        raise argparse.ArgumentTypeError("Both start and end date must be provided.")
 
 
 async def main():
@@ -72,17 +86,7 @@ async def main():
 
     args = parser.parse_args()
 
-    if args.start_date and args.end_date and args.start_date > args.end_date:
-        raise argparse.ArgumentTypeError("Start date must be before end date.")
-
-    if args.start_date is None and args.end_date is None:
-        args.start_date = dt.datetime.now(dt.timezone.utc)
-        args.end_date = dt.datetime.now(dt.timezone.utc)
-
-    if (args.start_date is None and args.end_date is not None) or (
-        args.start_date is not None and args.end_date is None
-    ):
-        raise argparse.ArgumentTypeError("Both start and end date must be provided.")
+    validate_args(args)
 
     kp = Keypair()  # throwaway, doesn't matter
 
@@ -113,42 +117,7 @@ async def main():
     to_remove = []
 
     for pubkey in user_account_pubkeys:
-        print(f"Fetching signatures for subaccount: {pubkey}")
-        found_start_date = False
-        found_end_date = False
-        before = None
-        sigs_for_pubkey = []
-        while not found_end_date:
-            sigs = await connection.get_signatures_for_address(pubkey, before=before)
-            for sig in sigs.value:
-                if is_today(sig.block_time, args.end_date):
-                    before = sig.signature
-                    sigs_for_pubkey.append(str(sig.signature))
-                    found_end_date = True
-                    break
-            if len(sigs.value) < 1_000:
-                break
-            before = sigs.value[-1].signature
-
-        while not found_start_date:
-            print(
-                f"fetching signatures, current size: {len(sigs_for_pubkey)}",
-                end="\r",
-            )
-            sigs = await connection.get_signatures_for_address(pubkey, before=before)
-            before = sigs.value[-1].signature
-
-            size_before = len(sigs_for_pubkey)
-            new_sigs = [
-                str(sig.signature)
-                for sig in sigs.value
-                if is_between(sig.block_time, args.start_date, args.end_date)
-            ]
-            sigs_for_pubkey.extend(new_sigs)
-            size_after = len(sigs_for_pubkey)
-
-            found_start_date = size_after - size_before < 1_000
-        print(f"Total signatures for subaccount: {pubkey}: {len(sigs_for_pubkey)}")
+        sigs_for_pubkey = await fetch_sigs_for_subaccount(connection, pubkey, args)
         if len(sigs_for_pubkey) == 0:
             to_remove.append(pubkey)
             continue
@@ -160,19 +129,7 @@ async def main():
 
     # fetch & parse all the logs for all the signatures for each pubkey for today
     for pubkey, sigs in sigs_by_pubkey.items():
-        chunks = [sigs[i : i + 200] for i in range(0, len(sigs), 200)]
-        pubkey_logs, failed_sigs = await get_logs(dc, chunks, rpc)
-        if len(failed_sigs) > 0:
-            print(
-                f"Failed to fetch logs for {len(failed_sigs)} signatures: {failed_sigs}, retrying"
-            )
-            chunks = [failed_sigs[i : i + 200] for i in range(0, len(failed_sigs), 200)]
-            failed_sig_logs, _ = await get_logs(dc, chunks, rpc)
-            pubkey_logs.update(failed_sig_logs)
-            print(
-                f"Successfully fetched logs for {len(failed_sig_logs)}/{len(failed_sigs)} failed signatures"
-            )
-        print(pubkey)
+        pubkey_logs = await fetch_and_parse_logs(pubkey, sigs, dc, rpc)
         logs_by_pubkey[pubkey] = pubkey_logs
         print(
             f"Successfully fetched logs for {len(pubkey_logs)} signatures for subaccount: {pubkey}"
