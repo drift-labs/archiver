@@ -143,15 +143,15 @@ async def main():
                         totals_by_subaccount_assets.setdefault(str(pubkey), {}).setdefault(0, 0)
                         totals_by_subaccount_assets[str(pubkey)][0] += amount
                     case "SwapRecord":
-                        amount_out = -abs(int(getattr(event.data, "amount_out", None)))
-                        amount_in = int(getattr(event.data, "amount_in", None))
+                        amount_out = int(getattr(event.data, "amount_out", None))
+                        amount_in = -abs(int(getattr(event.data, "amount_in", None)))
                         out_market_index = int(getattr(event.data, "out_market_index", None))
                         in_market_index = int(getattr(event.data, "in_market_index", None))
 
-                        total_withdrawals_by_subaccount_assets.setdefault(str(pubkey), {}).setdefault(out_market_index, 0)
-                        total_withdrawals_by_subaccount_assets[str(pubkey)][out_market_index] += amount_out
-                        totals_by_subaccount_assets.setdefault(str(pubkey), {}).setdefault(in_market_index, 0)
-                        totals_by_subaccount_assets[str(pubkey)][in_market_index] += amount_in
+                        total_withdrawals_by_subaccount_assets.setdefault(str(pubkey), {}).setdefault(in_market_index, 0)
+                        total_withdrawals_by_subaccount_assets[str(pubkey)][in_market_index] += amount_in
+                        totals_by_subaccount_assets.setdefault(str(pubkey), {}).setdefault(out_market_index, 0)
+                        totals_by_subaccount_assets[str(pubkey)][out_market_index] += amount_out
                     case _:
                         print("Unknown event type")
                         print(event)
