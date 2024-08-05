@@ -148,8 +148,8 @@ async def main():
                         out_market_index = int(getattr(event.data, "out_market_index", None))
                         in_market_index = int(getattr(event.data, "in_market_index", None))
 
-                        totals_by_subaccount_assets.setdefault(str(pubkey), {}).setdefault(out_market_index, 0)
-                        totals_by_subaccount_assets[str(pubkey)][out_market_index] += amount_out
+                        total_withdrawals_by_subaccount_assets.setdefault(str(pubkey), {}).setdefault(out_market_index, 0)
+                        total_withdrawals_by_subaccount_assets[str(pubkey)][out_market_index] += amount_out
                         totals_by_subaccount_assets.setdefault(str(pubkey), {}).setdefault(in_market_index, 0)
                         totals_by_subaccount_assets[str(pubkey)][in_market_index] += amount_in
                     case _:
