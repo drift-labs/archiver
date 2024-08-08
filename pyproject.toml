@@ -8,7 +8,8 @@ readme = "README.md"
 [tool.poetry.dependencies]
 python = "^3.10"
 solana = "^0.34.0"
-driftpy = "^0.7.66"
+pandas = "^2.2.2"
+driftpy = {path = "/Users/frank/Documents/code/drift/driftpy", develop = true}
 
 
 [build-system]
