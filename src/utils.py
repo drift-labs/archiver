@@ -46,6 +46,7 @@ async def fetch_txs_batch(
     url,
     max_retries=3,
     retry_delay=5,
+    need_all=False,
 ):
     retry_count = 0
     while retry_count < max_retries:
@@ -61,8 +62,11 @@ async def fetch_txs_batch(
                         response_json = await response.json()
                         for tx in response_json:
                             if tx["result"] is None or tx["result"] == "None":
-                                print("None")
-                                continue
+                                if need_all:
+                                    raise Exception("Failed to fetch all transactions")
+                                else:
+                                    print("None")
+                                    continue
                         return response_json
                     else:
                         error_text = await response.text()
@@ -80,13 +84,13 @@ async def fetch_txs_batch(
     return None
 
 
-async def get_logs(dc, chunks, rpc):
+async def get_logs(dc, chunks, rpc, need_all=False):
     async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=60)) as client:
         semaphore = asyncio.Semaphore(CONCURRENT_REQUESTS)
         req_chunks = [[get_tx_request(sig) for sig in chunk] for chunk in chunks]
 
         tasks = [
-            fetch_txs_batch(client, req_chunk, semaphore, rpc, MAX_RETRIES, RETRY_DELAY)
+            fetch_txs_batch(client, req_chunk, semaphore, rpc, MAX_RETRIES, RETRY_DELAY, need_all)
             for req_chunk in req_chunks
         ]
 
@@ -163,16 +167,16 @@ async def fetch_sigs_for_subaccount(connection, pubkey, args):
     print(f"Total signatures for subaccount: {pubkey}: {len(sigs_for_pubkey)}")
     return sigs_for_pubkey
 
-async def fetch_and_parse_logs(pubkey, sigs, dc, rpc):
+async def fetch_and_parse_logs(pubkey, sigs, dc, rpc, need_all=False):
     print(f"Fetching logs for {len(sigs)} signatures")
     chunks = [sigs[i : i + 200] for i in range(0, len(sigs), 200)]
-    pubkey_logs, failed_sigs = await get_logs(dc, chunks, rpc)
+    pubkey_logs, failed_sigs = await get_logs(dc, chunks, rpc, need_all)
     if len(failed_sigs) > 0:
         print(
             f"Failed to fetch logs for {len(failed_sigs)} signatures: {failed_sigs}, retrying"
         )
         chunks = [failed_sigs[i : i + 200] for i in range(0, len(failed_sigs), 200)]
-        failed_sig_logs, _ = await get_logs(dc, chunks, rpc)
+        failed_sig_logs, _ = await get_logs(dc, chunks, rpc, need_all)
         pubkey_logs.update(failed_sig_logs)
         print(
             f"Successfully fetched logs for {len(failed_sig_logs)}/{len(failed_sigs)} failed signatures"
