@@ -6,9 +6,10 @@ authors = ["soundsonacid <soundsonacid@gmail.com>"]
 readme = "README.md"
 
 [tool.poetry.dependencies]
-python = "^3.10"
+python = "3.10.6"
 solana = "^0.34.0"
-driftpy = "^0.7.66"
+pandas = "^2.2.2"
+driftpy = "^0.7.100"
 
 
 [build-system]

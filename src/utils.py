@@ -11,11 +11,15 @@ CONCURRENT_REQUESTS = 3  # Maximum number of concurrent requests
 MAX_RETRIES = 3  # Maximum number of retries for a failed request
 RETRY_DELAY = 5  # Delay in seconds between retries of requests
 
-
 def is_today(unix_ts: int, today: dt.datetime) -> bool:
     ts_date = dt.datetime.fromtimestamp(unix_ts, dt.timezone.utc)
 
     return ts_date.date() == today.date()
+
+def is_before(unix_ts: int, today: dt.datetime) -> bool:
+    ts_date = dt.datetime.fromtimestamp(unix_ts, dt.timezone.utc)
+
+    return ts_date.date() < today.date()
 
 
 def is_between(unix_ts: int, start_date: dt.datetime, end_date: dt.datetime) -> bool:
@@ -42,6 +46,7 @@ async def fetch_txs_batch(
     url,
     max_retries=3,
     retry_delay=5,
+    need_all=False,
 ):
     retry_count = 0
     while retry_count < max_retries:
@@ -57,7 +62,11 @@ async def fetch_txs_batch(
                         response_json = await response.json()
                         for tx in response_json:
                             if tx["result"] is None or tx["result"] == "None":
-                                print("None")
+                                if need_all:
+                                    raise Exception("Failed to fetch all transactions")
+                                else:
+                                    print("None")
+                                    continue
                         return response_json
                     else:
                         error_text = await response.text()
@@ -75,36 +84,39 @@ async def fetch_txs_batch(
     return None
 
 
-async def get_logs(dc, chunks, rpc):
+async def get_logs(dc, chunks, rpc, need_all=False):
     async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=60)) as client:
         semaphore = asyncio.Semaphore(CONCURRENT_REQUESTS)
         req_chunks = [[get_tx_request(sig) for sig in chunk] for chunk in chunks]
 
         tasks = [
-            fetch_txs_batch(client, req_chunk, semaphore, rpc, MAX_RETRIES, RETRY_DELAY)
+            fetch_txs_batch(client, req_chunk, semaphore, rpc, MAX_RETRIES, RETRY_DELAY, need_all)
             for req_chunk in req_chunks
         ]
+
         chunk_res = await asyncio.gather(*tasks)
 
         logs = {}
         failed_sigs = []
+        err_count = 0
+        settle_count = 0
         for responses, sigs in zip(chunk_res, chunks):
             if responses is None:
                 print(f"Failed to fetch batch for signatures: {sigs}")
                 failed_sigs += sigs
                 continue
+            sig_counter = 0
             for tx, sig in zip(responses, sigs):
-                if str(sig) == "2UVhmrN3PZNYjxWMxwNoSrC2NuFbTa91w3kcUELcmSkMWyd59cV27zQNk5h3dNKEEL4QGoHu2MYbQ7KGq7cSBA25":
-                    print(tx)
                 try:
                     if tx["result"]["meta"]["err"] is not None:
                         continue
                     events = parse_logs(dc.program, tx["result"]["meta"]["logMessages"])
                     for event in events:
+                        if "settle" in event.name.lower():
+                            settle_count += 1
                         logs.setdefault(sig, []).append(event)
                 except Exception as e:
                     print(f"Failed to parse logs for signature {sig}: {e}")
-
         return logs, failed_sigs
 
 
@@ -130,54 +142,66 @@ def write(
 
 async def fetch_sigs_for_subaccount(connection, pubkey, args):
     print(f"Fetching signatures for subaccount: {pubkey}")
-    found_start_date = False
-    found_end_date = False
     before = None
     sigs_for_pubkey = []
-    while not found_end_date:
-        sigs = await connection.get_signatures_for_address(pubkey, before=before)
-        for sig in sigs.value:
-            if is_today(sig.block_time, args.end_date):
-                before = sig.signature
-                sigs_for_pubkey.append(str(sig.signature))
-                found_end_date = True
-                break
-        if len(sigs.value) < 1_000:
-            break
-        before = sigs.value[-1].signature
-    while not found_start_date:
+    done = False
+    while not done:
         print(
             f"fetching signatures, current size: {len(sigs_for_pubkey)}",
             end="\r",
         )
-        sigs = await connection.get_signatures_for_address(pubkey, before=before)
-        before = sigs.value[-1].signature
-
-        size_before = len(sigs_for_pubkey)
-        new_sigs = [
-            str(sig.signature)
-            for sig in sigs.value
-            if is_between(sig.block_time, args.start_date, args.end_date)
-        ]
-        sigs_for_pubkey.extend(new_sigs)
-        size_after = len(sigs_for_pubkey)
-
-        found_start_date = size_after - size_before < 1_000
+        try:
+            sigs = await connection.get_signatures_for_address(pubkey, before=before)
+        except Exception as e:
+            print(f"failed to fetch sigs {e}")
+            continue
+        if len(sigs.value) < 1:
+            break
+        for sig in sigs.value:
+            if is_before(sig.block_time, args.start_date):
+                done = True
+                break
+            if is_between(sig.block_time, args.start_date, args.end_date):
+                sigs_for_pubkey.append(str(sig.signature))
+                before = sig.signature
     print(f"Total signatures for subaccount: {pubkey}: {len(sigs_for_pubkey)}")
     return sigs_for_pubkey
 
-async def fetch_and_parse_logs(pubkey, sigs, dc, rpc):
+async def fetch_and_parse_logs(pubkey, sigs, dc, rpc, need_all=False):
+    print(f"Fetching logs for {len(sigs)} signatures")
     chunks = [sigs[i : i + 200] for i in range(0, len(sigs), 200)]
-    pubkey_logs, failed_sigs = await get_logs(dc, chunks, rpc)
+    pubkey_logs, failed_sigs = await get_logs(dc, chunks, rpc, need_all)
     if len(failed_sigs) > 0:
         print(
             f"Failed to fetch logs for {len(failed_sigs)} signatures: {failed_sigs}, retrying"
         )
         chunks = [failed_sigs[i : i + 200] for i in range(0, len(failed_sigs), 200)]
-        failed_sig_logs, _ = await get_logs(dc, chunks, rpc)
+        failed_sig_logs, _ = await get_logs(dc, chunks, rpc, need_all)
         pubkey_logs.update(failed_sig_logs)
         print(
             f"Successfully fetched logs for {len(failed_sig_logs)}/{len(failed_sigs)} failed signatures"
         )
     return pubkey_logs
 
+
+async def fetch_all_sigs_for_subaccount(connection, pubkey):
+    print(f"Fetching signatures for subaccount: {pubkey}")
+    before = None
+    sigs_for_pubkey = []
+    done = False
+    while not done:
+        print(
+            f"fetching signatures, current size: {len(sigs_for_pubkey)}",
+            end="\r",
+        )
+        try:
+            sigs = await connection.get_signatures_for_address(pubkey, before=before)
+        except Exception as e:
+            print(f"failed to fetch sigs {e}")
+            continue
+        if len(sigs.value) < 1:
+            break
+        sigs_for_pubkey.extend(str(sig.signature) for sig in sigs.value)
+        before = sigs.value[-1].signature
+    print(f"Total signatures for subaccount: {pubkey}: {len(sigs_for_pubkey)}")
+    return sigs_for_pubkey

@@ -1,3 +1,5 @@
 .mypy_cache
 logs/
 poetry.lock
+/src/__pycache__/
+/src/settle.csv
