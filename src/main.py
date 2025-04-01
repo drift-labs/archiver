@@ -1,21 +1,22 @@
-import asyncio
 import argparse
+import asyncio
 import datetime as dt
-
 from collections import defaultdict
 
-from solders.pubkey import Pubkey  # type: ignore
-from solders.keypair import Keypair  # type: ignore
-
-from solana.rpc.async_api import AsyncClient
-
+from driftpy.account_subscription_config import AccountSubscriptionConfig
 from driftpy.addresses import get_user_account_public_key
 from driftpy.constants.config import DRIFT_PROGRAM_ID
 from driftpy.drift_client import DriftClient
 from driftpy.types import is_variant
-from driftpy.account_subscription_config import AccountSubscriptionConfig
+from solana.rpc.async_api import AsyncClient
+from solders.keypair import Keypair  # type: ignore
+from solders.pubkey import Pubkey  # type: ignore
 
-from src.utils import is_today, get_logs, write, is_between, fetch_sigs_for_subaccount, fetch_and_parse_logs
+from src.utils import (
+    fetch_and_parse_logs,
+    fetch_sigs_for_subaccount,
+    write,
+)
 
 EVENT_TYPES = [
     "OrderActionRecord",
@@ -25,7 +26,7 @@ EVENT_TYPES = [
     "InsuranceFundStakeRecord",
     "LiquidationRecord",
     "LPRecord",
-    "WithdrawRecord"
+    "WithdrawRecord",
     "FundingPaymentRecord",
 ]
 
@@ -45,7 +46,8 @@ def parse_date(date_string) -> dt.datetime:
         raise argparse.ArgumentTypeError(
             f"Not a valid date: '{date_string}'. Expected format: MM-DD-YYYY"
         )
-    
+
+
 def validate_args(args):
     if args.start_date and args.end_date and args.start_date > args.end_date:
         raise argparse.ArgumentTypeError("Start date must be before end date.")
@@ -61,6 +63,8 @@ def validate_args(args):
 
 
 async def main():
+    print(f"Archiver starting at {dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+
     parser = argparse.ArgumentParser(description="Parameters for archival.")
     parser.add_argument("--rpc", type=str, required=True, help="Solana RPC url")
     parser.add_argument(
@@ -85,8 +89,16 @@ async def main():
     parser.add_argument("--end-date", type=parse_date, help="End date for the archive")
 
     args = parser.parse_args()
+    print("Arguments parsed successfully")
 
     validate_args(args)
+
+    print(f"Archiving for authority: {args.public_key}")
+    print(f"Subaccounts to process: {args.subaccounts}")
+    print(f"Event types to archive: {args.events}")
+    print(
+        f"Date range: {args.start_date.strftime('%Y-%m-%d')} to {args.end_date.strftime('%Y-%m-%d')}"
+    )
 
     kp = Keypair()  # throwaway, doesn't matter
 
@@ -95,7 +107,9 @@ async def main():
     dc = DriftClient(
         connection, kp, account_subscription=AccountSubscriptionConfig("cached")
     )
+    print("Subscribing to drift client...")
     await dc.subscribe()
+    print("Done.\n")
 
     authority = Pubkey.from_string(args.public_key)
     subaccounts = args.subaccounts
@@ -106,11 +120,16 @@ async def main():
     today = dt.datetime.now(dt.timezone.utc).date()
 
     # these are assumed to be in subaccount order ascending
+    print(f"User account addresses for authority {authority}:")
     user_account_pubkeys = [
         get_user_account_public_key(DRIFT_PROGRAM_ID, authority, subaccount)
         for subaccount in subaccounts
     ]
     user_account_pubkeys.append(authority)
+
+    for i, subaccount_index in enumerate(subaccounts):
+        print(f"- Subaccount {subaccount_index}: {user_account_pubkeys[i]}")
+    print(f"- Authority: {authority}\n")
 
     logs_by_pubkey = {}
     sigs_by_pubkey = {}
